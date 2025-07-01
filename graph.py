@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import random
 from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Button # Import Button
+from matplotlib.widgets import Button, TextBox # Import Button and TextBox
 import time
 
 class SlimeAgent:
@@ -76,7 +76,7 @@ class SlimeMoldFoodNetwork:
         # For animation control
         self.current_frame = 0
         self.paused = False
-        self.history = [] # To store states for 'prev' button
+        self.history = [] # To store states for 'prev' button and direct frame access
         self.max_history_length = 500 # Limit history to prevent memory issues
 
     def setup_graph(self):
@@ -279,9 +279,6 @@ class SlimeMoldFoodNetwork:
                 
     def _get_current_state(self):
         """Captures the current state of the simulation for history."""
-        # We need to capture enough info to reconstruct the display
-        # and potentially rollback a step.
-        # This can be memory intensive, so consider what's truly needed.
         return {
             'step_count': self.step_count,
             'pheromone_map': dict(self.pheromone_map),
@@ -330,10 +327,10 @@ class SlimeMoldFoodNetwork:
 
     def step_simulation(self):
         """Single step of the simulation"""
-        if self.current_frame >= self.max_steps: # Stop if max steps reached
+        if self.current_frame >= self.max_steps and self.max_steps != -1: # Stop if max steps reached (unless -1 for infinite)
             return False
 
-        # Store current state BEFORE stepping for 'prev' button
+        # Store current state BEFORE stepping for 'prev' button and direct frame access
         self.history.append(self._get_current_state())
         if len(self.history) > self.max_history_length:
             self.history.pop(0) # Remove oldest state
@@ -386,35 +383,62 @@ class SlimeMoldFoodNetwork:
         
         # Set up the figure and 2D axis
         self.fig, self.ax = plt.subplots(figsize=(12, 10))
-        plt.subplots_adjust(bottom=0.2) # Make space for buttons
+        plt.subplots_adjust(bottom=0.25) # Make space for buttons and textbox
 
         # Button axes
-        ax_prev = plt.axes([0.7, 0.05, 0.1, 0.075])
-        ax_next = plt.axes([0.81, 0.05, 0.1, 0.075])
-        ax_play_pause = plt.axes([0.58, 0.05, 0.1, 0.075]) # Play/Pause button
+        ax_prev = plt.axes([0.7, 0.05, 0.1, 0.04])
+        ax_next = plt.axes([0.81, 0.05, 0.1, 0.04])
+        ax_play_pause = plt.axes([0.58, 0.05, 0.1, 0.04]) # Play/Pause button
+        ax_text_input = plt.axes([0.7, 0.1, 0.21, 0.04]) # Textbox for frame number
 
         self.btn_prev = Button(ax_prev, 'Prev')
         self.btn_next = Button(ax_next, 'Next')
         self.btn_play_pause = Button(ax_play_pause, 'Pause')
+        self.txt_frame_input = TextBox(ax_text_input, 'Go to Frame: ', initial='0')
+        
+        def _submit_frame_input(expression):
+            try:
+                frame_number = int(expression)
+                if 0 <= frame_number < len(self.history):
+                    self.paused = True # Pause when jumping frames
+                    self.anim.event_source.stop()
+                    self._load_state(self.history[frame_number])
+                    self.current_frame = frame_number
+                    self.update_plot(self.current_frame)
+                    self.btn_play_pause.label.set_text('Play')
+                elif frame_number >= len(self.history) and self.step_count < self.max_steps:
+                    print(f"Frame {frame_number} not yet generated. Max generated: {self.step_count-1}")
+                    self.txt_frame_input.set_val(str(self.current_frame)) # Reset text box
+                else:
+                    print(f"Invalid frame number: {frame_number}")
+                    self.txt_frame_input.set_val(str(self.current_frame)) # Reset text box
+
+            except ValueError:
+                print("Invalid input. Please enter an integer.")
+                self.txt_frame_input.set_val(str(self.current_frame)) # Reset text box
 
         def _prev(event):
-            if self.current_frame > 0 and len(self.history) > 1:
+            if self.current_frame > 0:
                 self.paused = True # Pause when using prev/next
                 self.anim.event_source.stop() # Stop animation if playing
                 
-                # Load the state BEFORE the current one
-                # Need to be careful here if history doesn't exactly match step_count
-                if self.current_frame > 1 and len(self.history) >= (self.current_frame - 1):
-                     # If history is full and popped old states, might need to reload from current history[-2]
-                    if self.history[-1]['step_count'] == self.step_count: # If current state is in history
-                         self._load_state(self.history.pop(-2)) # Load the state before current, remove current
-                    else: # current state was not saved, load from history end
-                        self._load_state(self.history.pop(-1)) # Load previous state, remove it
-
-                self.current_frame = self.step_count # Update frame number to match loaded state
-                self.update_plot(self.current_frame)
-                self.btn_play_pause.label.set_text('Play')
-
+                # Find the state that corresponds to the previous frame
+                # If history is trimmed, self.history[self.current_frame-1] might not be accurate.
+                # Instead, search for the state by its step_count
+                target_step = self.current_frame - 1
+                found_state = None
+                for i in reversed(range(len(self.history))):
+                    if self.history[i]['step_count'] == target_step:
+                        found_state = self.history[i]
+                        break
+                
+                if found_state:
+                    self._load_state(found_state)
+                    self.current_frame = self.step_count # Update frame number to match loaded state
+                    self.update_plot(self.current_frame)
+                    self.btn_play_pause.label.set_text('Play')
+                else:
+                    print("Cannot go back further. History not available for this frame.")
 
         def _next(event):
             if not self.paused: # If playing, next button click should pause
@@ -422,12 +446,29 @@ class SlimeMoldFoodNetwork:
                 self.anim.event_source.stop()
                 self.btn_play_pause.label.set_text('Play')
 
-            # Advance simulation one step
-            if self.step_simulation(): # Step and update
-                self.update_plot(self.current_frame)
+            # Advance simulation one step if possible
+            if self.current_frame < self.step_count: # If we are in history, just load next state from history
+                target_step = self.current_frame + 1
+                found_state = None
+                for i in range(len(self.history)):
+                    if self.history[i]['step_count'] == target_step:
+                        found_state = self.history[i]
+                        break
+                if found_state:
+                    self._load_state(found_state)
+                    self.current_frame = self.step_count
+                    self.update_plot(self.current_frame)
+                else: # This should not happen if history is correctly managed
+                    print("Error: Next state not found in history.")
+
+            elif self.current_frame == self.step_count: # If we are at the current live end, simulate one step
+                if self.step_simulation(): # Step and update
+                    self.update_plot(self.current_frame)
+                else:
+                    # Handle end of simulation
+                    self.update_plot(self.current_frame, final=True)
             else:
-                # Handle end of simulation
-                self.update_plot(self.current_frame, final=True)
+                print("Reached end of simulation.")
 
 
         def _play_pause(event):
@@ -443,14 +484,15 @@ class SlimeMoldFoodNetwork:
         self.btn_prev.on_clicked(_prev)
         self.btn_next.on_clicked(_next)
         self.btn_play_pause.on_clicked(_play_pause)
+        self.txt_frame_input.on_submit(_submit_frame_input)
         
         def animate(frame):
             if self.paused:
                 return [] # Do nothing if paused
 
             # Only advance simulation if current_frame matches step_count
-            # This prevents stepping twice if _next was clicked
-            if frame >= self.current_frame:
+            # This prevents stepping twice if _next was clicked or if we jumped
+            if self.current_frame == self.step_count:
                 if self.step_simulation():
                     pass # Simulation advanced successfully
                 else:
@@ -458,6 +500,11 @@ class SlimeMoldFoodNetwork:
                     self.anim.event_source.stop() # Stop animation
                     self.update_plot(self.current_frame, final=True)
                     return [] # No need to re-draw if already stopped
+            else:
+                # If current_frame is not step_count, it means we are displaying a historical frame
+                # and the animation should not progress the simulation.
+                # It will wait for manual _next or _play_pause to align current_frame with step_count
+                return []
 
             self.update_plot(self.current_frame)
             return [] # No blitting required
@@ -511,14 +558,14 @@ class SlimeMoldFoodNetwork:
                                       c=color, linewidth=linewidth, alpha=alpha)
         
         # Highlight stable network edges
-        if final or self.step_count == self.max_steps: # Also highlight on final frame of animation
-            for edge in self.stable_network_edges:
-                node1, node2 = edge
-                pos1 = self.positions[node1]
-                pos2 = self.positions[node2]
-                
-                self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]],
-                             c='red', linewidth=4, alpha=0.8)
+        # if final or self.step_count == self.max_steps: # Also highlight on final frame of animation
+        for edge in self.stable_network_edges:
+            node1, node2 = edge
+            pos1 = self.positions[node1]
+            pos2 = self.positions[node2]
+            
+            self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]],
+                            c='red', linewidth=4, alpha=0.8)
         
         # Plot all nodes
         for i in range(self.num_nodes):
