@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import random
 from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Button # Import Button
 import time
 
 class SlimeAgent:
@@ -72,6 +73,12 @@ class SlimeMoldFoodNetwork:
         self.step_count = 0
         self.setup_graph()
         
+        # For animation control
+        self.current_frame = 0
+        self.paused = False
+        self.history = [] # To store states for 'prev' button
+        self.max_history_length = 500 # Limit history to prevent memory issues
+
     def setup_graph(self):
         """Create a fully connected 2D graph with random weights"""
         self.graph = nx.complete_graph(self.num_nodes)
@@ -166,9 +173,7 @@ class SlimeMoldFoodNetwork:
             
         # Combined attractiveness
         attractiveness = (
-            (pheromone + food_pheromone * 2) ** 1.3 * 
-            food_attraction * 
-            (1 + distance_improvement * 0.5)
+            (pheromone + food_pheromone * 2) ** 1.3 * food_attraction * (1 + distance_improvement * 0.5)
         ) / (weight ** 0.7)
         
         return attractiveness
@@ -208,7 +213,7 @@ class SlimeMoldFoodNetwork:
                 return random.choice(unvisited_neighbors)
             else:
                 return random.choice(neighbors)
-                
+            
         # Normalize probabilities
         total = sum(attractiveness)
         if total == 0:
@@ -272,11 +277,70 @@ class SlimeMoldFoodNetwork:
             if self.food_pheromone_map[edge] < 0.1:
                 del self.food_pheromone_map[edge]
                 
+    def _get_current_state(self):
+        """Captures the current state of the simulation for history."""
+        # We need to capture enough info to reconstruct the display
+        # and potentially rollback a step.
+        # This can be memory intensive, so consider what's truly needed.
+        return {
+            'step_count': self.step_count,
+            'pheromone_map': dict(self.pheromone_map),
+            'food_pheromone_map': dict(self.food_pheromone_map),
+            'discovered_edges': set(self.discovered_edges),
+            'stable_network_edges': set(self.stable_network_edges),
+            'agents_state': [
+                {
+                    'position': agent.position.copy(),
+                    'current_node': agent.current_node,
+                    'target_node': agent.target_node,
+                    'path': list(agent.path), # Store path for exploration bonus etc.
+                    'energy': agent.energy,
+                    'alive': agent.alive,
+                    'moving': agent.moving,
+                    'move_progress': agent.move_progress,
+                    'food_seeking': agent.food_seeking,
+                    'has_found_food': agent.has_found_food,
+                    'target_food': agent.target_food
+                }
+                for agent in self.agents
+            ]
+        }
+
+    def _load_state(self, state):
+        """Loads a previously saved state."""
+        self.step_count = state['step_count']
+        self.pheromone_map = state['pheromone_map']
+        self.food_pheromone_map = state['food_pheromone_map']
+        self.discovered_edges = state['discovered_edges']
+        self.stable_network_edges = state['stable_network_edges']
+        
+        for i, agent_state in enumerate(state['agents_state']):
+            agent = self.agents[i] # Assuming agents list order doesn't change
+            agent.position = agent_state['position']
+            agent.current_node = agent_state['current_node']
+            agent.target_node = agent_state['target_node']
+            agent.path = agent_state['path']
+            agent.energy = agent_state['energy']
+            agent.alive = agent_state['alive']
+            agent.moving = agent_state['moving']
+            agent.move_progress = agent_state['move_progress']
+            agent.food_seeking = agent_state['food_seeking']
+            agent.has_found_food = agent_state['has_found_food']
+            agent.target_food = agent_state['target_food']
+
     def step_simulation(self):
         """Single step of the simulation"""
+        if self.current_frame >= self.max_steps: # Stop if max steps reached
+            return False
+
+        # Store current state BEFORE stepping for 'prev' button
+        self.history.append(self._get_current_state())
+        if len(self.history) > self.max_history_length:
+            self.history.pop(0) # Remove oldest state
+
         active_agents = [a for a in self.agents if a.alive and a.energy > 0]
         
-        if not active_agents:
+        if not active_agents and self.step_count > 0: # Simulation finished
             return False
             
         for agent in active_agents:
@@ -310,30 +374,101 @@ class SlimeMoldFoodNetwork:
             self.evaporate_pheromones()
             
         self.step_count += 1
+        self.current_frame += 1 # Update internal frame counter
         return len([a for a in self.agents if a.alive and a.energy > 0]) > 0
         
     def animate_simulation(self, max_steps=400):
         """Run simulation with real-time animation"""
         print("Starting animated slime mold food network simulation...")
+        self.max_steps = max_steps # Store max_steps
         self.initialize_nodes()
         self.initialize_agents()
         
         # Set up the figure and 2D axis
         self.fig, self.ax = plt.subplots(figsize=(12, 10))
+        plt.subplots_adjust(bottom=0.2) # Make space for buttons
+
+        # Button axes
+        ax_prev = plt.axes([0.7, 0.05, 0.1, 0.075])
+        ax_next = plt.axes([0.81, 0.05, 0.1, 0.075])
+        ax_play_pause = plt.axes([0.58, 0.05, 0.1, 0.075]) # Play/Pause button
+
+        self.btn_prev = Button(ax_prev, 'Prev')
+        self.btn_next = Button(ax_next, 'Next')
+        self.btn_play_pause = Button(ax_play_pause, 'Pause')
+
+        def _prev(event):
+            if self.current_frame > 0 and len(self.history) > 1:
+                self.paused = True # Pause when using prev/next
+                self.anim.event_source.stop() # Stop animation if playing
+                
+                # Load the state BEFORE the current one
+                # Need to be careful here if history doesn't exactly match step_count
+                if self.current_frame > 1 and len(self.history) >= (self.current_frame - 1):
+                     # If history is full and popped old states, might need to reload from current history[-2]
+                    if self.history[-1]['step_count'] == self.step_count: # If current state is in history
+                         self._load_state(self.history.pop(-2)) # Load the state before current, remove current
+                    else: # current state was not saved, load from history end
+                        self._load_state(self.history.pop(-1)) # Load previous state, remove it
+
+                self.current_frame = self.step_count # Update frame number to match loaded state
+                self.update_plot(self.current_frame)
+                self.btn_play_pause.label.set_text('Play')
+
+
+        def _next(event):
+            if not self.paused: # If playing, next button click should pause
+                self.paused = True
+                self.anim.event_source.stop()
+                self.btn_play_pause.label.set_text('Play')
+
+            # Advance simulation one step
+            if self.step_simulation(): # Step and update
+                self.update_plot(self.current_frame)
+            else:
+                # Handle end of simulation
+                self.update_plot(self.current_frame, final=True)
+
+
+        def _play_pause(event):
+            if self.paused:
+                self.paused = False
+                self.anim.event_source.start()
+                self.btn_play_pause.label.set_text('Pause')
+            else:
+                self.paused = True
+                self.anim.event_source.stop()
+                self.btn_play_pause.label.set_text('Play')
+
+        self.btn_prev.on_clicked(_prev)
+        self.btn_next.on_clicked(_next)
+        self.btn_play_pause.on_clicked(_play_pause)
         
         def animate(frame):
-            if frame < max_steps and self.step_simulation():
-                self.update_plot(frame)
-            else:
-                # Simulation ended
-                self.update_plot(frame, final=True)
-                
-            return []
-            
+            if self.paused:
+                return [] # Do nothing if paused
+
+            # Only advance simulation if current_frame matches step_count
+            # This prevents stepping twice if _next was clicked
+            if frame >= self.current_frame:
+                if self.step_simulation():
+                    pass # Simulation advanced successfully
+                else:
+                    # Simulation ended
+                    self.anim.event_source.stop() # Stop animation
+                    self.update_plot(self.current_frame, final=True)
+                    return [] # No need to re-draw if already stopped
+
+            self.update_plot(self.current_frame)
+            return [] # No blitting required
+
+        # Initial plot to show the starting state
+        self.update_plot(0)
+
         # Create animation
         self.anim = FuncAnimation(
-            self.fig, animate, frames=max_steps + 50, 
-            interval=80, blit=False, repeat=False
+            self.fig, animate, frames=max_steps + 50, # Provide enough frames, actual control is internal
+            interval=10, blit=False, repeat=False
         )
         
         plt.show()
@@ -373,17 +508,17 @@ class SlimeMoldFoodNetwork:
                         linewidth = 0.5 + intensity * 3
                         
                         self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]],
-                                   c=color, linewidth=linewidth, alpha=alpha)
+                                      c=color, linewidth=linewidth, alpha=alpha)
         
         # Highlight stable network edges
-        if final and self.stable_network_edges:
+        if final or self.step_count == self.max_steps: # Also highlight on final frame of animation
             for edge in self.stable_network_edges:
                 node1, node2 = edge
                 pos1 = self.positions[node1]
                 pos2 = self.positions[node2]
                 
                 self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]],
-                           c='red', linewidth=4, alpha=0.8)
+                             c='red', linewidth=4, alpha=0.8)
         
         # Plot all nodes
         for i in range(self.num_nodes):
@@ -392,21 +527,21 @@ class SlimeMoldFoodNetwork:
             if i in self.source_nodes:
                 # Source nodes - large red circles
                 self.ax.scatter(*pos, c='red', s=300, alpha=0.9, 
-                              edgecolors='darkred', linewidth=2, marker='s')
+                                 edgecolors='darkred', linewidth=2, marker='s')
                 self.ax.text(pos[0], pos[1], f'S{i}', fontsize=10, fontweight='bold', 
-                           ha='center', va='center', color='white')
+                             ha='center', va='center', color='white')
             elif i in self.food_nodes:
                 # Food nodes - large green circles
                 self.ax.scatter(*pos, c='green', s=250, alpha=0.9, 
-                              edgecolors='darkgreen', linewidth=2, marker='o')
+                                 edgecolors='darkgreen', linewidth=2, marker='o')
                 self.ax.text(pos[0], pos[1], f'F{i}', fontsize=9, fontweight='bold', 
-                           ha='center', va='center', color='white')
+                             ha='center', va='center', color='white')
             else:
                 # Regular nodes - small blue circles
                 self.ax.scatter(*pos, c='lightblue', s=80, alpha=0.7, 
-                              edgecolors='blue', linewidth=1)
+                                 edgecolors='blue', linewidth=1)
                 self.ax.text(pos[0], pos[1], str(i), fontsize=7, 
-                           ha='center', va='center')
+                             ha='center', va='center')
         
         # Plot sample of agents grouped by source
         source_groups = {}
@@ -427,7 +562,7 @@ class SlimeMoldFoodNetwork:
                 
                 for pos in sample_positions:
                     self.ax.scatter(*pos, c=colors[source_id % len(colors)], s=25, 
-                                  alpha=0.8, marker='o', edgecolors='black', linewidth=0.5)
+                                     alpha=0.8, marker='o', edgecolors='black', linewidth=0.5)
         
         # Set plot properties
         self.ax.set_xlabel('X Position')
@@ -436,7 +571,7 @@ class SlimeMoldFoodNetwork:
         
         # Title with information
         active_agents = sum(1 for a in self.agents if a.alive and a.energy > 0)
-        title = f"Slime Mold Food Network - Step {frame}"
+        title = f"Slime Mold Food Network - Step {self.step_count}" # Use self.step_count
         if final:
             title += f" - FINAL: Stable Network ({len(self.stable_network_edges)} edges)"
         else:
@@ -457,16 +592,17 @@ class SlimeMoldFoodNetwork:
             plt.Line2D([0], [0], color='orange', linewidth=3, label='Food Paths'),
             plt.Line2D([0], [0], color='purple', linewidth=2, label='Exploration Paths'),
         ]
-        if final and self.stable_network_edges:
+        if final or self.step_count == self.max_steps: # Ensure stable network is shown if simulation reached end
             legend_elements.append(plt.Line2D([0], [0], color='red', linewidth=4, label='Stable Network'))
             
         self.ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
+        plt.draw() # Ensure the plot is redrawn
 
 def main():
     """Main function to run the animated simulation"""
     # Create and run animated food network simulation
     sim = SlimeMoldFoodNetwork(num_nodes=26, num_sources=None, num_food=None, agents_per_source=40)
-    sim.animate_simulation(max_steps=350)
+    sim.animate_simulation(max_steps=350) # Keep max_steps, but we'll control frames manually
     
     print("\nSimulation Summary:")
     print(f"- Total nodes: {sim.num_nodes}")
