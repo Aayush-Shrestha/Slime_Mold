@@ -1,386 +1,305 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import networkx as nx
+import pygame
 import random
-from matplotlib.animation import FuncAnimation
-import time
+import math
+import numpy as np
+from collections import deque
 
-class SlimeAgent:
-    def __init__(self, start_node, graph_positions, agent_id=0, source_id=0):
-        self.position = np.array(graph_positions[start_node])
-        self.current_node = start_node
-        self.target_node = start_node
-        self.path = [start_node]
-        self.visited_edges = set()
-        self.pheromone_trail = {}
-        self.energy = 150  # Reduced energy since we have more agents
-        self.alive = True
-        self.moving = False
-        self.move_progress = 0.0
-        self.agent_id = agent_id
-        self.source_id = source_id  # Which source this agent came from
-        
-    def move_towards_target(self, graph_positions, speed=0.08):
-        """Smoothly move agent towards target node"""
-        if not self.moving or self.target_node == self.current_node:
-            return True
-            
-        start_pos = np.array(graph_positions[self.current_node])
-        target_pos = np.array(graph_positions[self.target_node])
-        
-        self.move_progress += speed
-        
-        if self.move_progress >= 1.0:
-            # Reached target
-            self.position = target_pos
-            self.current_node = self.target_node
-            self.path.append(self.target_node)
-            self.moving = False
-            self.move_progress = 0.0
-            return True
-        else:
-            # Interpolate position
-            self.position = start_pos + (target_pos - start_pos) * self.move_progress
-            return False
-            
-    def set_target(self, target_node):
-        """Set new target node for movement"""
-        if target_node != self.current_node:
-            self.target_node = target_node
-            self.moving = True
-            self.move_progress = 0.0
+# --- Configuration ---
+WIDTH, HEIGHT = 800, 600
+AGENT_COUNT = 2000
+TRAIL_DECAY = 0.992
+SENSOR_DISTANCE = 12
+SENSOR_ANGLE = math.pi / 6
+TURN_ANGLE = math.pi / 8
+STEP_SIZE = 1.2
+MEMORY_LENGTH = 30
 
-class SlimeMoldMST:
-    def __init__(self, num_nodes=26, num_sources=None, agents_per_source=40):
-        self.num_nodes = num_nodes
-        self.num_sources = num_sources or random.randint(2, 4)
-        self.agents_per_source = agents_per_source
-        self.graph = None
-        self.positions = None
-        self.agents = []
-        self.source_nodes = []
-        self.pheromone_map = {}
-        self.discovered_edges = set()
-        self.mst_edges = []
-        self.step_count = 0
-        self.animation_data = {'positions': [], 'edges': [], 'pheromones': []}
-        self.setup_graph()
-        
-    def setup_graph(self):
-        """Create a fully connected 3D graph with random weights"""
-        self.graph = nx.complete_graph(self.num_nodes)
-        
-        # Generate 3D positions for nodes in a more spread out manner
-        self.positions = {}
-        for i in range(self.num_nodes):
-            # Use spherical distribution for better 3D visualization
-            theta = random.uniform(0, 2 * np.pi)
-            phi = random.uniform(0, np.pi)
-            r = random.uniform(5, 15)
-            
-            x = r * np.sin(phi) * np.cos(theta)
-            y = r * np.sin(phi) * np.sin(theta)
-            z = r * np.cos(phi)
-            
-            self.positions[i] = (x, y, z)
-        
-        # Assign random weights to edges
-        for edge in self.graph.edges():
-            weight = random.randint(1, 100)
-            self.graph[edge[0]][edge[1]]['weight'] = weight
-            
-    def initialize_agents(self):
-        """Initialize multiple slime agents at each random source node"""
-        self.source_nodes = random.sample(range(self.num_nodes), self.num_sources)
-        self.agents = []
-        
-        agent_id = 0
-        for source_id, source_node in enumerate(self.source_nodes):
-            for i in range(self.agents_per_source):
-                agent = SlimeAgent(source_node, self.positions, agent_id, source_id)
-                # Add small random offset to prevent all agents from being at exact same position
-                offset = np.random.normal(0, 0.1, 3)
-                agent.position += offset
-                self.agents.append(agent)
-                agent_id += 1
-                
-        total_agents = len(self.agents)
-        print(f"Initialized {total_agents} agents ({self.agents_per_source} per source)")
-        print(f"Source nodes: {self.source_nodes}")
-        return self.source_nodes
-        
-    def get_edge_attractiveness(self, from_node, to_node):
-        """Calculate edge attractiveness based on weight and pheromones"""
-        edge = tuple(sorted([from_node, to_node]))
-        weight = self.graph[from_node][to_node]['weight']
-        pheromone = self.pheromone_map.get(edge, 0.1)
-        
-        # Lower weight and higher pheromone = more attractive
-        attractiveness = (pheromone ** 1.2) / (weight ** 0.9)
-        return attractiveness
-        
-    def select_next_node(self, agent):
-        """Select next node for agent based on attractiveness"""
-        current = agent.current_node
-        neighbors = list(self.graph.neighbors(current))
-        
-        if not neighbors:
-            return None
-            
-        # Remove recently visited nodes to encourage exploration
-        recent_path = agent.path[-5:] if len(agent.path) > 5 else agent.path
-        unvisited_neighbors = [n for n in neighbors if n not in recent_path[:-1]]
-        
-        if unvisited_neighbors:
-            neighbors = unvisited_neighbors
-            
-        # Calculate probabilities for each neighbor
-        attractiveness = []
-        for neighbor in neighbors:
-            attr = self.get_edge_attractiveness(current, neighbor)
-            # Add exploration bonus for less visited nodes
-            visit_count = agent.path.count(neighbor)
-            exploration_bonus = 1.0 / (1 + visit_count * 0.5)
-            attr *= exploration_bonus
-            # Add randomness
-            attr *= random.uniform(0.8, 1.2)
-            attractiveness.append(attr)
-            
-        # Normalize probabilities
-        total = sum(attractiveness)
-        if total == 0:
-            return random.choice(neighbors)
-            
-        probabilities = [a / total for a in attractiveness]
-        
-        # Select based on probability
-        r = random.random()
-        cumulative = 0
-        for i, prob in enumerate(probabilities):
-            cumulative += prob
-            if r <= cumulative:
-                return neighbors[i]
-                
-        return neighbors[-1]
-        
-    def update_pheromones(self, agent, from_node, to_node):
-        """Update pheromone levels on traversed edge"""
-        edge = tuple(sorted([from_node, to_node]))
-        weight = self.graph[from_node][to_node]['weight']
-        
-        # Higher pheromone deposit for lower weight edges
-        deposit = max(1.0, 200 / weight)
-        
-        if edge in self.pheromone_map:
-            self.pheromone_map[edge] += deposit
-        else:
-            self.pheromone_map[edge] = deposit
-            
-        # Add to discovered edges
-        self.discovered_edges.add(edge)
-        
-    def evaporate_pheromones(self, rate=0.98):
-        """Evaporate pheromones over time"""
-        for edge in list(self.pheromone_map.keys()):
-            self.pheromone_map[edge] *= rate
-            if self.pheromone_map[edge] < 0.01:
-                del self.pheromone_map[edge]
-                
-    def step_simulation(self):
-        """Single step of the simulation"""
-        active_agents = [a for a in self.agents if a.alive and a.energy > 0]
-        
-        if not active_agents:
-            return False
-            
-        for agent in active_agents:
-            # Handle agent movement
-            if agent.moving:
-                reached = agent.move_towards_target(self.positions)
-                if not reached:
-                    continue  # Still moving, skip other logic
-                    
-            # Agent has reached current target, select new target
-            if not agent.moving:
-                next_node = self.select_next_node(agent)
-                
-                if next_node is not None and next_node != agent.current_node:
-                    # Update pheromones for the edge we're about to traverse
-                    self.update_pheromones(agent, agent.current_node, next_node)
-                    
-                    # Set new target
-                    agent.set_target(next_node)
-                    agent.energy -= 1
-                    
-                    if agent.energy <= 0:
-                        agent.alive = False
-                        
-        # Evaporate pheromones
-        if self.step_count % 5 == 0:  # Less frequent evaporation
-            self.evaporate_pheromones()
-            
-        self.step_count += 1
-        return len([a for a in self.agents if a.alive and a.energy > 0]) > 0
-        
-    def extract_mst(self):
-        """Extract MST from discovered edges with pheromone weights"""
-        if len(self.discovered_edges) < self.num_nodes - 1:
-            print("Not enough edges discovered for complete MST")
-            return
-            
-        # Create subgraph with discovered edges
-        mst_graph = nx.Graph()
-        
-        for edge in self.discovered_edges:
-            node1, node2 = edge
-            pheromone = self.pheromone_map.get(edge, 0.01)
-            # Use inverse of pheromone as weight (higher pheromone = lower weight)
-            mst_weight = 1.0 / (pheromone + 0.01)
-            mst_graph.add_edge(node1, node2, weight=mst_weight)
-            
-        # Find MST using Kruskal's algorithm
-        try:
-            # Ensure graph is connected
-            if nx.is_connected(mst_graph):
-                mst = nx.minimum_spanning_tree(mst_graph)
-                self.mst_edges = list(mst.edges())
-                print(f"MST found with {len(self.mst_edges)} edges")
-            else:
-                # Find MST of largest connected component
-                largest_cc = max(nx.connected_components(mst_graph), key=len)
-                subgraph = mst_graph.subgraph(largest_cc)
-                mst = nx.minimum_spanning_tree(subgraph)
-                self.mst_edges = list(mst.edges())
-                print(f"MST found for largest component with {len(self.mst_edges)} edges")
-        except Exception as e:
-            print(f"Could not form MST: {e}")
-            
-    def animate_simulation(self, max_steps=300):
-        """Run simulation with real-time animation"""
-        print("Starting animated slime mold MST simulation...")
-        source_nodes = self.initialize_agents()
-        
-        # Set up the figure and 3D axis
-        self.fig = plt.figure(figsize=(12, 8))
-        self.ax = self.fig.add_subplot(111, projection='3d')
-        
-        # Initialize plot elements
-        self.node_scatter = None
-        self.agent_scatter = None
-        self.edge_lines = []
-        self.mst_lines = []
-        self.pheromone_lines = []
-        
-        def animate(frame):
-            if frame < max_steps and self.step_simulation():
-                self.update_plot(source_nodes, frame)
-            elif frame == max_steps or not any(a.alive and a.energy > 0 for a in self.agents):
-                # Simulation ended, extract and show MST
-                if not self.mst_edges:
-                    self.extract_mst()
-                self.update_plot(source_nodes, frame, show_mst=True)
-                
-            return []
-            
-        # Create animation
-        self.anim = FuncAnimation(
-            self.fig, animate, frames=max_steps + 50, 
-            interval=100, blit=False, repeat=False
-        )
-        
-        plt.show()
-        
-    def update_plot(self, source_nodes, frame, show_mst=False):
-        """Update the 3D plot for animation"""
-        self.ax.clear()
-        
-        # Plot all nodes
-        node_colors = ['red' if i in source_nodes else 'lightblue' for i in range(self.num_nodes)]
-        node_sizes = [150 if i in source_nodes else 100 for i in range(self.num_nodes)]
-        
-        for i, (node, pos) in enumerate(self.positions.items()):
-            self.ax.scatter(*pos, c=node_colors[i], s=node_sizes[i], alpha=0.8)
-            self.ax.text(pos[0], pos[1], pos[2], str(node), fontsize=8, fontweight='bold')
-            
-        # Plot discovered edges with pheromone intensity
-        if self.discovered_edges and self.pheromone_map:
-            max_pheromone = max(self.pheromone_map.values()) if self.pheromone_map else 1
-            
-            for edge in self.discovered_edges:
-                if edge in self.pheromone_map:
-                    node1, node2 = edge
-                    pos1 = self.positions[node1]
-                    pos2 = self.positions[node2]
-                    
-                    pheromone = self.pheromone_map[edge]
-                    intensity = min(1.0, pheromone / max_pheromone)
-                    
-                    self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], [pos1[2], pos2[2]],
-                               c='purple', linewidth=0.5 + intensity * 2, alpha=0.3 + intensity * 0.5)
-        
-        # Plot agents
-        agent_positions = []
-        agent_colors = []
-        colors = ['red', 'green', 'blue', 'orange', 'yellow', 'cyan']
-        
-        for i, agent in enumerate(self.agents):
-            if agent.alive and agent.energy > 0:
-                agent_positions.append(agent.position)
-                agent_colors.append(colors[i % len(colors)])
-                
-        if agent_positions:
-            agent_positions = np.array(agent_positions)
-            for i, pos in enumerate(agent_positions):
-                self.ax.scatter(*pos, c=agent_colors[i], s=200, alpha=0.9, 
-                              marker='o', edgecolors='black', linewidth=2)
-                
-        # Show MST overlay if requested
-        if show_mst and self.mst_edges:
-            for edge in self.mst_edges:
-                node1, node2 = edge
-                pos1 = self.positions[node1]
-                pos2 = self.positions[node2]
-                
-                self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], [pos1[2], pos2[2]],
-                           c='red', linewidth=4, alpha=0.9)
-                           
-        # Set plot properties
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        
-        title = f"Slime Mold MST Simulation - Step {frame}"
-        if show_mst:
-            title += f" - MST Complete ({len(self.mst_edges)} edges)"
-        else:
-            active_agents = sum(1 for a in self.agents if a.alive and a.energy > 0)
-            title += f" - Active Agents: {active_agents}, Edges: {len(self.discovered_edges)}"
-            
-        self.ax.set_title(title)
-        
-        # Set consistent axis limits
-        all_positions = np.array(list(self.positions.values()))
-        margin = 2
-        self.ax.set_xlim(all_positions[:, 0].min() - margin, all_positions[:, 0].max() + margin)
-        self.ax.set_ylim(all_positions[:, 1].min() - margin, all_positions[:, 1].max() + margin)
-        self.ax.set_zlim(all_positions[:, 2].min() - margin, all_positions[:, 2].max() + margin)
+# --- Initialization ---
+pygame.init()
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Tokyo Railway Slime Mold Simulation")
+font = pygame.font.SysFont(None, 20)
+small_font = pygame.font.SysFont(None, 16)
+clock = pygame.time.Clock()
 
-def main():
-    """Main function to run the animated simulation"""
-    # Create and run animated simulation
-    sim = SlimeMoldMST(num_nodes=26, num_sources=None)  # Random number of sources (2-4)
-    sim.animate_simulation(max_steps=250)
+# Single trail map (like original slime mold)
+trail_map = np.zeros((WIDTH, HEIGHT))
+
+# Tokyo and surrounding cities (approximate relative positions)
+# Central Tokyo at screen center, surrounding cities scaled to fit
+TOKYO_CENTER = (WIDTH // 2, HEIGHT // 2)
+
+# Major cities around Tokyo (scaled and positioned roughly)
+cities = [
+    # Central Tokyo (start point)
+    {"name": "Tokyo", "pos": TOKYO_CENTER, "is_central": True},
     
-    print("\nSimulation Summary:")
-    print(f"- Total nodes: {sim.num_nodes}")
-    print(f"- Source nodes: {sim.num_sources}")
-    print(f"- Edges discovered: {len(sim.discovered_edges)}")
-    print(f"- MST edges: {len(sim.mst_edges)}")
+    # Major surrounding cities
+    {"name": "Yokohama", "pos": (WIDTH//2 - 60, HEIGHT//2 + 80), "is_central": False},
+    {"name": "Kawasaki", "pos": (WIDTH//2 - 40, HEIGHT//2 + 60), "is_central": False},
+    {"name": "Saitama", "pos": (WIDTH//2 - 20, HEIGHT//2 - 80), "is_central": False},
+    {"name": "Chiba", "pos": (WIDTH//2 + 90, HEIGHT//2 + 20), "is_central": False},
+    {"name": "Hachioji", "pos": (WIDTH//2 - 120, HEIGHT//2 - 20), "is_central": False},
+    {"name": "Machida", "pos": (WIDTH//2 - 80, HEIGHT//2 + 40), "is_central": False},
+    {"name": "Fujisawa", "pos": (WIDTH//2 - 40, HEIGHT//2 + 120), "is_central": False},
+    {"name": "Kashiwa", "pos": (WIDTH//2 + 60, HEIGHT//2 - 60), "is_central": False},
+    {"name": "Ichikawa", "pos": (WIDTH//2 + 80, HEIGHT//2 + 60), "is_central": False},
+    {"name": "Tachikawa", "pos": (WIDTH//2 - 100, HEIGHT//2 - 60), "is_central": False},
+    {"name": "Mitaka", "pos": (WIDTH//2 - 80, HEIGHT//2 - 40), "is_central": False},
+    {"name": "Kokubunji", "pos": (WIDTH//2 - 90, HEIGHT//2 - 50), "is_central": False},
+    {"name": "Chofu", "pos": (WIDTH//2 - 70, HEIGHT//2 + 20), "is_central": False},
+    {"name": "Komae", "pos": (WIDTH//2 - 50, HEIGHT//2 + 30), "is_central": False},
     
-    if sim.mst_edges:
-        total_weight = sum(sim.graph[edge[0]][edge[1]]['weight'] for edge in sim.mst_edges)
-        print(f"- MST total weight: {total_weight}")
+    # Additional outer cities
+    {"name": "Takasaki", "pos": (WIDTH//2 - 150, HEIGHT//2 - 120), "is_central": False},
+    {"name": "Mito", "pos": (WIDTH//2 + 140, HEIGHT//2 - 100), "is_central": False},
+    {"name": "Odawara", "pos": (WIDTH//2 - 140, HEIGHT//2 + 100), "is_central": False},
+]
 
-if __name__ == "__main__":
-    main()
+# Terrain obstacles (mountains, water bodies that block growth)
+obstacles = [
+    # Tokyo Bay (simplified)
+    {"type": "water", "center": (WIDTH//2 + 120, HEIGHT//2 + 100), "radius": 60},
+    {"type": "water", "center": (WIDTH//2 + 80, HEIGHT//2 + 140), "radius": 40},
+    
+    # Mountain ranges (simplified)
+    {"type": "mountain", "center": (WIDTH//2 - 180, HEIGHT//2 - 80), "radius": 50},
+    {"type": "mountain", "center": (WIDTH//2 + 160, HEIGHT//2 - 140), "radius": 45},
+    {"type": "mountain", "center": (WIDTH//2 - 160, HEIGHT//2 + 140), "radius": 55},
+]
+
+# Create obstacle mask
+obstacle_mask = np.ones((WIDTH, HEIGHT))  # 1 = passable, 0 = blocked
+for obs in obstacles:
+    cx, cy = obs["center"]
+    radius = obs["radius"]
+    for x in range(max(0, cx - radius), min(WIDTH, cx + radius)):
+        for y in range(max(0, cy - radius), min(HEIGHT, cy + radius)):
+            if (x - cx)**2 + (y - cy)**2 <= radius**2:
+                obstacle_mask[x][y] = 0.1  # Very low permeability
+
+# --- Enhanced Slime Agent for Tokyo Simulation ---
+class TokyoSlimeAgent:
+    def __init__(self, start_x, start_y):
+        self.x = start_x + random.uniform(-15, 15)
+        self.y = start_y + random.uniform(-15, 15)
+        self.angle = random.uniform(0, 2 * math.pi)
+        self.energy = 100
+        self.last_food_time = 0
+        
+    def move(self):
+        # Sense environment and decide direction
+        self._sense_and_turn()
+        
+        # Move forward
+        dx = math.cos(self.angle) * STEP_SIZE
+        dy = math.sin(self.angle) * STEP_SIZE
+        
+        new_x = self.x + dx
+        new_y = self.y + dy
+        
+        # Check if new position is valid (not blocked by obstacles)
+        if (0 <= new_x < WIDTH and 0 <= new_y < HEIGHT and 
+            obstacle_mask[int(new_x)][int(new_y)] > 0.5):
+            self.x = new_x
+            self.y = new_y
+        else:
+            # Bounce off obstacles
+            self.angle += random.uniform(-math.pi/2, math.pi/2)
+            
+        # Deposit trail (stronger near food sources)
+        if 0 <= int(self.x) < WIDTH and 0 <= int(self.y) < HEIGHT:
+            food_bonus = self._calculate_food_bonus()
+            trail_map[int(self.x)][int(self.y)] += 1.0 + food_bonus
+            
+        # Lose energy over time, gain energy near food
+        self.energy -= 0.1
+        if self._near_food():
+            self.energy = min(100, self.energy + 2)
+            self.last_food_time = pygame.time.get_ticks()
+            
+        # Die if out of energy
+        if self.energy <= 0:
+            self._respawn()
+            
+    def _sense_and_turn(self):
+        # Sample trail strength in three directions
+        center = self._sample_sensor(0)
+        left = self._sample_sensor(-SENSOR_ANGLE)
+        right = self._sample_sensor(SENSOR_ANGLE)
+        
+        # Add food attraction
+        food_attraction = self._sense_food_gradient()
+        
+        if center + food_attraction > left and center + food_attraction > right:
+            return  # Continue straight
+        elif left > right:
+            self.angle -= TURN_ANGLE
+        elif right > left:
+            self.angle += TURN_ANGLE
+        else:
+            # Random exploration
+            self.angle += random.uniform(-TURN_ANGLE, TURN_ANGLE)
+            
+    def _sample_sensor(self, angle_offset):
+        angle = self.angle + angle_offset
+        sx = int(self.x + math.cos(angle) * SENSOR_DISTANCE)
+        sy = int(self.y + math.sin(angle) * SENSOR_DISTANCE)
+        
+        if 0 <= sx < WIDTH and 0 <= sy < HEIGHT:
+            return trail_map[sx][sy] * obstacle_mask[sx][sy]
+        return 0
+        
+    def _sense_food_gradient(self):
+        # Attraction to nearest food source
+        min_dist = float('inf')
+        for city in cities:
+            if not city["is_central"]:  # Don't attract to Tokyo itself
+                dx = city["pos"][0] - self.x
+                dy = city["pos"][1] - self.y
+                dist = math.sqrt(dx*dx + dy*dy)
+                min_dist = min(min_dist, dist)
+                
+        # Stronger attraction when farther from food
+        if min_dist > 0:
+            return max(0, 20 / min_dist)
+        return 0
+        
+    def _calculate_food_bonus(self):
+        # Stronger trails when near food sources
+        bonus = 0
+        for city in cities:
+            dx = city["pos"][0] - self.x
+            dy = city["pos"][1] - self.y
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist < 30:  # Near food
+                bonus += max(0, (30 - dist) / 30) * 2
+        return bonus
+        
+    def _near_food(self):
+        for city in cities:
+            dx = city["pos"][0] - self.x
+            dy = city["pos"][1] - self.y
+            if math.sqrt(dx*dx + dy*dy) < 25:
+                return True
+        return False
+        
+    def _respawn(self):
+        # Respawn from Tokyo center
+        self.x = TOKYO_CENTER[0] + random.uniform(-20, 20)
+        self.y = TOKYO_CENTER[1] + random.uniform(-20, 20)
+        self.energy = 100
+        self.angle = random.uniform(0, 2 * math.pi)
+
+# Create agents starting from Tokyo
+agents = []
+for _ in range(AGENT_COUNT):
+    agents.append(TokyoSlimeAgent(TOKYO_CENTER[0], TOKYO_CENTER[1]))
+
+# --- Buttons ---
+button_color = (70, 70, 70)
+hover_color = (100, 100, 100)
+text_color = (255, 255, 255)
+
+def draw_button(rect, text, mouse_pos, click, action):
+    color = hover_color if rect.collidepoint(mouse_pos) else button_color
+    pygame.draw.rect(screen, color, rect)
+    label = small_font.render(text, True, text_color)
+    screen.blit(label, (rect.x + 5, rect.y + 5))
+    if rect.collidepoint(mouse_pos) and click:
+        return action
+    return None
+
+# --- Main loop ---
+running = True
+show_labels = True
+show_obstacles = True
+simulation_speed = 1
+
+while running:
+    screen.fill((0, 0, 0))
+    click = False
+    mouse_pos = pygame.mouse.get_pos()
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            click = True
+
+    # Run simulation
+    for _ in range(simulation_speed):
+        for agent in agents:
+            agent.move()
+        
+        # Trail decay
+        trail_map *= TRAIL_DECAY
+
+    # Draw trail map
+    trail_surface = pygame.surfarray.make_surface(
+        (np.clip(trail_map * 80, 0, 255)).astype(np.uint8)
+    )
+    trail_surface.set_colorkey((0, 0, 0))
+    screen.blit(trail_surface, (0, 0))
+
+    # Draw obstacles
+    if show_obstacles:
+        for obs in obstacles:
+            cx, cy = obs["center"]
+            color = (0, 100, 200) if obs["type"] == "water" else (100, 80, 60)
+            pygame.draw.circle(screen, color, (int(cx), int(cy)), obs["radius"])
+            pygame.draw.circle(screen, (150, 150, 150), (int(cx), int(cy)), obs["radius"], 2)
+
+    # Draw cities
+    for city in cities:
+        x, y = city["pos"]
+        if city["is_central"]:
+            # Tokyo - larger red circle
+            pygame.draw.circle(screen, (255, 50, 50), (int(x), int(y)), 12)
+            pygame.draw.circle(screen, (255, 255, 255), (int(x), int(y)), 15, 3)
+        else:
+            # Other cities - smaller green circles
+            pygame.draw.circle(screen, (50, 255, 100), (int(x), int(y)), 8)
+            pygame.draw.circle(screen, (255, 255, 255), (int(x), int(y)), 10, 2)
+            
+        # City labels
+        if show_labels:
+            label = small_font.render(city["name"], True, (255, 255, 255))
+            screen.blit(label, (int(x) + 15, int(y) - 5))
+
+    # Draw buttons
+    clear_btn = pygame.Rect(10, 10, 80, 25)
+    labels_btn = pygame.Rect(100, 10, 100, 25)
+    obstacles_btn = pygame.Rect(210, 10, 100, 25)
+    speed_btn = pygame.Rect(320, 10, 80, 25)
+    
+    action1 = draw_button(clear_btn, "Clear", mouse_pos, click, "clear")
+    labels_text = "Labels: " + ("On" if show_labels else "Off")
+    action2 = draw_button(labels_btn, labels_text, mouse_pos, click, "toggle_labels")
+    obstacles_text = "Terrain: " + ("On" if show_obstacles else "Off")
+    action3 = draw_button(obstacles_btn, obstacles_text, mouse_pos, click, "toggle_obstacles")
+    action4 = draw_button(speed_btn, f"Speed: {simulation_speed}x", mouse_pos, click, "speed")
+
+    if action1 == "clear":
+        trail_map.fill(0)
+    if action2 == "toggle_labels":
+        show_labels = not show_labels
+    if action3 == "toggle_obstacles":
+        show_obstacles = not show_obstacles
+    if action4 == "speed":
+        simulation_speed = (simulation_speed % 3) + 1
+
+    # Draw info
+    info_text = small_font.render("Red = Tokyo (start), Green = Cities (food), Blue/Brown = Water/Mountains", 
+                                 True, (200, 200, 200))
+    screen.blit(info_text, (10, HEIGHT - 40))
+    
+    active_agents = sum(1 for a in agents if a.energy > 0)
+    stats_text = small_font.render(f"Active agents: {active_agents}/{len(agents)}", 
+                                  True, (200, 200, 200))
+    screen.blit(stats_text, (10, HEIGHT - 20))
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()

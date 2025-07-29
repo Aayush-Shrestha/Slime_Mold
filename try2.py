@@ -6,16 +6,16 @@ from collections import deque
 
 # --- Configuration ---
 WIDTH, HEIGHT = 800, 600
-AGENT_COUNT = 4000
-TRAIL_DECAY = 0.85
-FOOD_TRAIL_DECAY = 0.95  # Slower decay for food trails
+AGENT_COUNT = 3000
+TRAIL_DECAY = 0.98
+FOOD_TRAIL_DECAY = 0.995  # Slower decay for food trails
 SENSOR_DISTANCE = 8
 SENSOR_ANGLE = math.pi / 4
 TURN_ANGLE = math.pi / 6
 STEP_SIZE = 1.5
-MEMORY_LENGTH = 40  # How many steps agents remember
+MEMORY_LENGTH = 50  # How many steps agents remember
 FOOD_COUNT = 5
-FOOD_DETECTION_RADIUS = 20
+FOOD_DETECTION_RADIUS = 10
 COLONY_CENTERS = 3
 
 # --- Initialization ---
@@ -29,10 +29,6 @@ clock = pygame.time.Clock()
 exploration_trail = np.zeros((WIDTH, HEIGHT))
 food_trail = np.zeros((WIDTH, HEIGHT))
 
-# Obstacle system
-obstacle_mask = np.ones((WIDTH, HEIGHT))  # 1 = passable, 0 = blocked
-obstacles = []  # List to store obstacle info for drawing
-
 # Initialize food sources randomly
 food_sources = []
 colony_centers = []
@@ -43,98 +39,6 @@ def generate_food_and_colonies():
                    for _ in range(FOOD_COUNT)]
     colony_centers = [(random.randint(100, WIDTH - 100), random.randint(100, HEIGHT - 100)) 
                      for _ in range(COLONY_CENTERS)]
-    
-    # Remove food sources that are inside obstacles
-    food_sources = [food for food in food_sources 
-                   if obstacle_mask[int(food[0])][int(food[1])] > 0.5]
-    
-    # Ensure we have enough food sources
-    while len(food_sources) < FOOD_COUNT:
-        new_food = (random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50))
-        if obstacle_mask[int(new_food[0])][int(new_food[1])] > 0.5:
-            food_sources.append(new_food)
-
-def add_circular_obstacle(center_x, center_y, radius, obstacle_type="wall"):
-    """Add a circular obstacle"""
-    global obstacles, obstacle_mask
-    
-    obstacles.append({
-        "type": "circle",
-        "center": (center_x, center_y),
-        "radius": radius,
-        "obstacle_type": obstacle_type
-    })
-    
-    # Update obstacle mask
-    for x in range(max(0, center_x - radius), min(WIDTH, center_x + radius + 1)):
-        for y in range(max(0, center_y - radius), min(HEIGHT, center_y + radius + 1)):
-            if (x - center_x)**2 + (y - center_y)**2 <= radius**2:
-                obstacle_mask[x][y] = 0.0
-
-def add_rectangular_obstacle(x, y, width, height, obstacle_type="wall"):
-    """Add a rectangular obstacle"""
-    global obstacles, obstacle_mask
-    
-    obstacles.append({
-        "type": "rectangle",
-        "pos": (x, y),
-        "size": (width, height),
-        "obstacle_type": obstacle_type
-    })
-    
-    # Update obstacle mask
-    for ox in range(max(0, x), min(WIDTH, x + width)):
-        for oy in range(max(0, y), min(HEIGHT, y + height)):
-            obstacle_mask[ox][oy] = 0.0
-
-def add_polygon_obstacle(points, obstacle_type="wall"):
-    """Add a polygon obstacle (list of (x,y) points)"""
-    global obstacles, obstacle_mask
-    
-    obstacles.append({
-        "type": "polygon",
-        "points": points,
-        "obstacle_type": obstacle_type
-    })
-    
-    # Simple point-in-polygon check for obstacle mask
-    min_x = max(0, int(min(p[0] for p in points)))
-    max_x = min(WIDTH, int(max(p[0] for p in points)) + 1)
-    min_y = max(0, int(min(p[1] for p in points)))
-    max_y = min(HEIGHT, int(max(p[1] for p in points)) + 1)
-    
-    for x in range(min_x, max_x):
-        for y in range(min_y, max_y):
-            if point_in_polygon(x, y, points):
-                obstacle_mask[x][y] = 0.0
-
-def point_in_polygon(x, y, points):
-    """Check if point is inside polygon using ray casting"""
-    n = len(points)
-    inside = False
-    p1x, p1y = points[0]
-    for i in range(1, n + 1):
-        p2x, p2y = points[i % n]
-        if y > min(p1y, p2y):
-            if y <= max(p1y, p2y):
-                if x <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or x <= xinters:
-                        inside = not inside
-        p1x, p1y = p2x, p2y
-    return inside
-
-def clear_obstacles():
-    """Remove all obstacles"""
-    global obstacles, obstacle_mask
-    obstacles.clear()
-    obstacle_mask.fill(1.0)
-
-# Add some default obstacles
-add_circular_obstacle(200, 150, 40, "mountain")
-add_rectangular_obstacle(500, 300, 80, 60, "building")
-add_polygon_obstacle([(350, 450), (400, 420), (450, 480), (380, 500)], "lake")
 
 generate_food_and_colonies()
 
@@ -175,22 +79,11 @@ class EnhancedSlimeAgent:
         self._sense_and_turn()
         dx = math.cos(self.angle) * STEP_SIZE
         dy = math.sin(self.angle) * STEP_SIZE
+        self.x += dx
+        self.y += dy
         
-        new_x = self.x + dx
-        new_y = self.y + dy
-        
-        # Check if new position is blocked by obstacles
-        if (0 <= new_x < WIDTH and 0 <= new_y < HEIGHT and 
-            obstacle_mask[int(new_x)][int(new_y)] > 0.5):
-            self.x = new_x
-            self.y = new_y
-        else:
-            # Bounce off obstacles or screen edges
-            self.angle += random.uniform(-math.pi/2, math.pi/2)
-        
-        # Leave weak exploration trail (only on passable areas)
-        if (0 <= int(self.x) < WIDTH and 0 <= int(self.y) < HEIGHT and
-            obstacle_mask[int(self.x)][int(self.y)] > 0.5):
+        # Leave weak exploration trail
+        if 0 <= int(self.x) < WIDTH and 0 <= int(self.y) < HEIGHT:
             exploration_trail[int(self.x)][int(self.y)] += 0.5
             
     def _return_move(self):
@@ -206,29 +99,12 @@ class EnhancedSlimeAgent:
             
         # Move toward colony
         if distance > 0:
-            target_angle = math.atan2(dy, dx)
-            new_x = self.x + math.cos(target_angle) * STEP_SIZE
-            new_y = self.y + math.sin(target_angle) * STEP_SIZE
+            self.angle = math.atan2(dy, dx)
+            self.x += math.cos(self.angle) * STEP_SIZE
+            self.y += math.sin(self.angle) * STEP_SIZE
             
-            # Check if path to colony is blocked
-            if (0 <= new_x < WIDTH and 0 <= new_y < HEIGHT and 
-                obstacle_mask[int(new_x)][int(new_y)] > 0.5):
-                self.angle = target_angle
-                self.x = new_x
-                self.y = new_y
-            else:
-                # Try to navigate around obstacle
-                self.angle += random.uniform(-math.pi/4, math.pi/4)
-                new_x = self.x + math.cos(self.angle) * STEP_SIZE
-                new_y = self.y + math.sin(self.angle) * STEP_SIZE
-                if (0 <= new_x < WIDTH and 0 <= new_y < HEIGHT and 
-                    obstacle_mask[int(new_x)][int(new_y)] > 0.5):
-                    self.x = new_x
-                    self.y = new_y
-            
-            # Leave strong food trail while returning (only on passable areas)
-            if (0 <= int(self.x) < WIDTH and 0 <= int(self.y) < HEIGHT and
-                obstacle_mask[int(self.x)][int(self.y)] > 0.5):
+            # Leave strong food trail while returning
+            if 0 <= int(self.x) < WIDTH and 0 <= int(self.y) < HEIGHT:
                 food_trail[int(self.x)][int(self.y)] += 3.0
                 
     def _deposit_move(self):
@@ -272,10 +148,9 @@ class EnhancedSlimeAgent:
         sx = int((self.x + math.cos(angle) * SENSOR_DISTANCE))
         sy = int((self.y + math.sin(angle) * SENSOR_DISTANCE))
         
-        if (0 <= sx < WIDTH and 0 <= sy < HEIGHT and 
-            obstacle_mask[sx][sy] > 0.5):
+        if 0 <= sx < WIDTH and 0 <= sy < HEIGHT:
             return trail_map[sx][sy]
-        return 0  # Blocked areas return 0 trail strength
+        return 0
         
     def _check_for_food(self):
         for i, (fx, fy) in enumerate(food_sources):
@@ -289,12 +164,11 @@ class EnhancedSlimeAgent:
                 
                 # Remove consumed food (regenerates later)
                 # food_sources.pop(i)
-                # Regenerate food elsewhere after delay
-                if random.random() < 0.005:
-                    food_sources.pop(i)  # 10% chance to regenerate immediately
-                    new_food = (random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50))
-                    food_sources.append(new_food)
-                break
+                # # Regenerate food elsewhere after delay
+                # if random.random() < 0.1:  # 10% chance to regenerate immediately
+                #     new_food = (random.randint(50, WIDTH - 50), random.randint(50, HEIGHT - 50))
+                #     food_sources.append(new_food)
+                # break
                 
     def _reinforce_memory_trail(self):
         # Strengthen the trail along recently visited positions
@@ -346,17 +220,17 @@ while running:
     exploration_trail *= TRAIL_DECAY
     food_trail *= FOOD_TRAIL_DECAY  # Food trails persist longer
 
-    # Draw trail maps (fix coordinate system)
+    # Draw trail maps
     if show_mode in ["exploration", "both"]:
         explore_surface = pygame.surfarray.make_surface(
-            (np.clip(exploration_trail * 128, 0, 255)).astype(np.uint8)
+            np.rot90((np.clip(exploration_trail * 128, 0, 255)).astype(np.uint8))
         )
         explore_surface.set_colorkey((0, 0, 0))
         screen.blit(explore_surface, (0, 0))
         
     if show_mode in ["food", "both"]:
         food_surface = pygame.surfarray.make_surface(
-            (np.clip(food_trail * 64, 0, 255)).astype(np.uint8)
+            np.rot90((np.clip(food_trail * 64, 0, 255)).astype(np.uint8))
         )
         # Tint food trails yellow/orange
         food_array = pygame.surfarray.array3d(food_surface)
@@ -365,32 +239,6 @@ while running:
         food_surface = pygame.surfarray.make_surface(food_array)
         food_surface.set_colorkey((0, 0, 0))
         screen.blit(food_surface, (0, 0))
-
-    # Draw obstacles
-    for obs in obstacles:
-        if obs["type"] == "circle":
-            cx, cy = obs["center"]
-            radius = obs["radius"]
-            color = {"mountain": (139, 69, 19), "building": (128, 128, 128), "lake": (0, 100, 200), "wall": (100, 100, 100)}
-            obstacle_color = color.get(obs["obstacle_type"], (100, 100, 100))
-            pygame.draw.circle(screen, obstacle_color, (int(cx), int(cy)), radius)
-            pygame.draw.circle(screen, (200, 200, 200), (int(cx), int(cy)), radius, 2)
-            
-        elif obs["type"] == "rectangle":
-            x, y = obs["pos"]
-            width, height = obs["size"]
-            color = {"mountain": (139, 69, 19), "building": (128, 128, 128), "lake": (0, 100, 200), "wall": (100, 100, 100)}
-            obstacle_color = color.get(obs["obstacle_type"], (100, 100, 100))
-            pygame.draw.rect(screen, obstacle_color, (x, y, width, height))
-            pygame.draw.rect(screen, (200, 200, 200), (x, y, width, height), 2)
-            
-        elif obs["type"] == "polygon":
-            points = obs["points"]
-            color = {"mountain": (139, 69, 19), "building": (128, 128, 128), "lake": (0, 100, 200), "wall": (100, 100, 100)}
-            obstacle_color = color.get(obs["obstacle_type"], (100, 100, 100))
-            if len(points) >= 3:
-                pygame.draw.polygon(screen, obstacle_color, points)
-                pygame.draw.polygon(screen, (200, 200, 200), points, 2)
 
     # Draw food sources
     for fx, fy in food_sources:
@@ -406,13 +254,11 @@ while running:
     clear_btn = pygame.Rect(10, 10, 100, 30)
     reset_btn = pygame.Rect(120, 10, 100, 30)
     view_btn = pygame.Rect(230, 10, 120, 30)
-    obstacle_btn = pygame.Rect(360, 10, 130, 30)
     
     action1 = draw_button(clear_btn, "Clear Trails", mouse_pos, click, "clear")
     action2 = draw_button(reset_btn, "Reset World", mouse_pos, click, "reset")
     view_text = f"View: {show_mode.title()}"
     action3 = draw_button(view_btn, view_text, mouse_pos, click, "toggle_view")
-    action4 = draw_button(obstacle_btn, "Clear Obstacles", mouse_pos, click, "clear_obstacles")
 
     if action1 == "clear":
         exploration_trail.fill(0)
@@ -429,24 +275,6 @@ while running:
         modes = ["both", "exploration", "food"]
         current_idx = modes.index(show_mode)
         show_mode = modes[(current_idx + 1) % len(modes)]
-    if action4 == "clear_obstacles":
-        clear_obstacles()
-        generate_food_and_colonies()  # Regenerate food in case some were inside obstacles
-        
-    # Handle mouse clicks for adding obstacles
-    keys = pygame.key.get_pressed()
-    if click and not any([clear_btn.collidepoint(mouse_pos), reset_btn.collidepoint(mouse_pos), 
-                         view_btn.collidepoint(mouse_pos), obstacle_btn.collidepoint(mouse_pos)]):
-        if keys[pygame.K_c]:  # Hold C for circular obstacle
-            add_circular_obstacle(mouse_pos[0], mouse_pos[1], 30)
-        elif keys[pygame.K_r]:  # Hold R for rectangular obstacle
-            add_rectangular_obstacle(mouse_pos[0] - 25, mouse_pos[1] - 25, 50, 50)
-        elif keys[pygame.K_l]:  # Hold L for lake (circular, blue)
-            add_circular_obstacle(mouse_pos[0], mouse_pos[1], 35, "lake")
-        elif keys[pygame.K_m]:  # Hold M for mountain (circular, brown)
-            add_circular_obstacle(mouse_pos[0], mouse_pos[1], 40, "mountain")
-        elif keys[pygame.K_b]:  # Hold B for building (rectangular, gray)
-            add_rectangular_obstacle(mouse_pos[0] - 30, mouse_pos[1] - 20, 60, 40, "building")
 
     # Draw stats
     exploring = sum(1 for a in agents if a.mode == "exploring")

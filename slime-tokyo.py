@@ -254,7 +254,7 @@ while running:
     trail_colored[:, :, 1] = trail_normalized * 0.8  # Green component (main)
     trail_colored[:, :, 2] = trail_normalized * 0.1  # Blue component
     
-    surface = pygame.surfarray.make_surface(np.rot90(trail_colored.astype(np.uint8)))
+    surface = pygame.surfarray.make_surface(trail_colored.astype(np.uint8))
     surface.set_alpha(200)
     screen.blit(surface, (0, 0))
 

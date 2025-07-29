@@ -457,7 +457,8 @@ class SlimeMoldFoodNetwork:
             plt.Line2D([0], [0], color='orange', linewidth=3, label='Food Paths'),
             plt.Line2D([0], [0], color='purple', linewidth=2, label='Exploration Paths'),
         ]
-        if final and self.stable_network_edges:
+        #if final and self.stable_network_edges:
+        if self.stable_network_edges:
             legend_elements.append(plt.Line2D([0], [0], color='red', linewidth=4, label='Stable Network'))
             
         self.ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
