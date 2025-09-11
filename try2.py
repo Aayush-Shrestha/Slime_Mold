@@ -223,14 +223,14 @@ while running:
     # Draw trail maps
     if show_mode in ["exploration", "both"]:
         explore_surface = pygame.surfarray.make_surface(
-            np.rot90((np.clip(exploration_trail * 128, 0, 255)).astype(np.uint8))
+            (np.clip(exploration_trail * 128, 0, 255)).astype(np.uint8)
         )
         explore_surface.set_colorkey((0, 0, 0))
         screen.blit(explore_surface, (0, 0))
         
     if show_mode in ["food", "both"]:
         food_surface = pygame.surfarray.make_surface(
-            np.rot90((np.clip(food_trail * 64, 0, 255)).astype(np.uint8))
+            (np.clip(food_trail * 64, 0, 255)).astype(np.uint8)
         )
         # Tint food trails yellow/orange
         food_array = pygame.surfarray.array3d(food_surface)
