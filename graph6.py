@@ -9,7 +9,7 @@ from scipy.spatial import distance_matrix
 from scipy.spatial.distance import cdist
 
 class CSVSlimeSimulation:
-    def __init__(self, csv_file=None, width=800, height=800, agent_count=8000):
+    def __init__(self, csv_file=None, width=700, height=700, agent_count=8000):
         # Configuration
         self.WIDTH = width
         self.HEIGHT = height
@@ -46,7 +46,8 @@ class CSVSlimeSimulation:
         self.sources = []
         self.destinations = []
         self.agents = []
-        
+        self.relocation_timer = 0
+        self.relocation_interval = 20 * 60
         # Load CSV if provided
         if csv_file:
             self.load_csv(csv_file)
@@ -86,7 +87,49 @@ class CSVSlimeSimulation:
             print(f"Error loading CSV: {e}")
             print("Creating demo environment instead")
             self.create_demo_environment()
-    
+    def relocate_random_point(self):
+        """Relocate one random source or destination"""
+        # Find walkable positions
+        walkable_positions = []
+        for x in range(0, self.WIDTH, 10):
+            for y in range(0, self.HEIGHT, 10):
+                if self.obstacle_mask[x, y] > 0.5:
+                    walkable_positions.append((x, y))
+        
+        if len(walkable_positions) < 1:
+            return
+        
+        # Randomly choose to relocate a source or destination
+        relocate_source = False #random.choice([True, False])
+        
+        if relocate_source and len(self.sources) > 0:
+            # Pick random source to relocate
+            idx = random.randint(0, len(self.sources) - 1)
+            new_pos = random.choice(walkable_positions)
+            old_pos = self.sources[idx]
+            self.sources[idx] = new_pos
+            
+            # Update agents that started from this source
+            for agent in self.agents:
+                if abs(agent.start_x - old_pos[0]) < 5 and abs(agent.start_y - old_pos[1]) < 5:
+                    agent.start_x, agent.start_y = new_pos
+            
+            print(f"Relocated source from {old_pos} to {new_pos}")
+        
+        elif len(self.destinations) > 0:
+            # Pick random destination to relocate
+            idx = random.randint(0, len(self.destinations) - 1)
+            old_pos = self.destinations[idx]
+            self.destinations[idx] = random.choice(walkable_positions)
+            
+            # Update agent destination references
+            for agent in self.agents:
+                agent.destinations = self.destinations
+                if agent.target_destination == old_pos:
+                    agent.target_destination = None
+                    agent.mode = "exploring"
+            
+            print(f"Relocated destination from {old_pos} to {self.destinations[idx]}")
     def normalize_coordinates(self):
         """Normalize CSV coordinates to screen dimensions"""
         # Get bounds
@@ -94,7 +137,7 @@ class CSVSlimeSimulation:
         y_min, y_max = self.y_coords.min(), self.y_coords.max()
         
         # Normalize to screen size with padding
-        padding = 50
+        padding = 0
         self.x_coords = ((self.x_coords - x_min) / (x_max - x_min) * 
                         (self.WIDTH - 2 * padding) + padding).astype(int)
         self.y_coords = ((self.y_coords - y_min) / (y_max - y_min) * 
@@ -208,7 +251,7 @@ class CSVSlimeSimulation:
         
         # Randomly select positions, ensuring they're spread out
         selected_positions = []
-        for _ in range(6):  # 3 sources + 3 destinations
+        for _ in range(8):  # 3 sources + 3 destinations
             attempts = 0
             while attempts < 100:
                 pos = random.choice(walkable_positions)
@@ -225,8 +268,8 @@ class CSVSlimeSimulation:
                 selected_positions.append(pos)
         
         # Split into sources and destinations
-        self.sources = selected_positions[:3]
-        self.destinations = selected_positions[3:6]
+        self.sources = selected_positions[:5]
+        self.destinations = selected_positions[5:8]
         
         print(f"Sources: {self.sources}")
         print(f"Destinations: {self.destinations}")
@@ -241,19 +284,25 @@ class CSVSlimeSimulation:
                 self.agents.append(SlimeAgent(source[0], source[1], self.destinations))
     
     def update_simulation(self):
-        """Update one step of the simulation"""
-        # Move all agents
-        for agent in self.agents:
-            agent.move(self.obstacle_mask, self.exploration_trail, 
-                      self.food_trail, self.WIDTH, self.HEIGHT)
-        
-        # Update trail decay
-        self.exploration_trail *= self.TRAIL_DECAY
-        self.food_trail *= self.FOOD_TRAIL_DECAY
+            """Update one step of the simulation"""
+            # Move all agents
+            for agent in self.agents:
+                agent.move(self.obstacle_mask, self.exploration_trail, 
+                        self.food_trail, self.WIDTH, self.HEIGHT)
+            
+            # Update trail decay
+            self.exploration_trail *= self.TRAIL_DECAY
+            self.food_trail *= self.FOOD_TRAIL_DECAY
+            
+            # Handle relocation timer
+            self.relocation_timer += 1
+            if self.relocation_timer >= self.relocation_interval:
+                self.relocate_random_point()
+                self.relocation_timer = 0
     
     def draw(self, show_mode="both"):
         """Draw the simulation"""
-        self.screen.fill((0, 0, 0))
+        self.screen.fill((50, 50, 50))
         
         # Draw trail maps
         if show_mode in ["exploration", "both"]:
@@ -282,9 +331,9 @@ class CSVSlimeSimulation:
         obstacle_surface.set_colorkey((0, 0, 0))
         self.screen.blit(obstacle_surface, (0, 0))
         
-        # Draw sources (red circles)
+        # Draw sources ( circles)
         for sx, sy in self.sources:
-            pygame.draw.circle(self.screen, (255, 50, 50), (int(sx), int(sy)), 12)
+            pygame.draw.circle(self.screen, (50, 50, 250), (int(sx), int(sy)), 12)
             pygame.draw.circle(self.screen, (255, 255, 255), (int(sx), int(sy)), 15, 2)
         
         # Draw destinations (green circles)
@@ -300,11 +349,11 @@ class CSVSlimeSimulation:
         # Draw statistics
         exploring = sum(1 for a in self.agents if a.mode == "exploring")
         returning = sum(1 for a in self.agents if a.mode == "returning")
-        depositing = sum(1 for a in self.agents if a.mode == "depositing")
+        depositing = sum(1 for a in self.agents if a.mode == "depositing") + sum(1 for a in self.agents if a.mode == "returning")
         
         stats_text = self.font.render(
             f"Exploring: {exploring} | Returning: {returning} | Depositing: {depositing}",
-            True, (255, 255, 255)
+            True, (0, 250, 5)
         )
         self.screen.blit(stats_text, (10, self.HEIGHT - 30))
         
